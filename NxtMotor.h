@@ -7,26 +7,6 @@
 #ifndef NxtMotor_H_
 #define NxtMotor_H_
 
-#include "Arduino.h"
 
-//add your includes for the project here
-
-
-//end of add your includes here
-#ifdef __cplusplus
-extern "C" {
-#endif
-void loop();
-void setup();
-#ifdef __cplusplus
-} // extern "C"
-#endif
-
-//add your function definitions for the project here
-
-
-
-
-//Do not add code below this line
 #endif /* NxtMotor_H_ */
 
