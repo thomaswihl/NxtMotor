@@ -2,6 +2,7 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+//#include <util/atomic.h>
 #include <stdint.h>
 
 /* Pin usage
@@ -36,16 +37,16 @@
 static const uint16_t PWMCLK = 5000;
 static const uint16_t TIMER1_MAX = 8000000 / PWMCLK;
 
-static volatile uint32_t gMs = 0;
-static volatile uint32_t gA = 0;
-static volatile uint32_t gB = 0;
-static volatile uint32_t gAerror = 0;
-static volatile uint32_t gBerror = 0;
+static volatile uint8_t gMs = 0;
+static volatile uint8_t gA = 0;
+static volatile uint8_t gB = 0;
+static volatile uint8_t gAerror = 0;
+static volatile uint8_t gBerror = 0;
 static volatile uint8_t gDebug = 0;
 
 ISR(TIMER1_OVF_vect)
 {
-    ++gMs;
+    //++gMs;
 }
 
 /* PCINT0-7 */
@@ -78,9 +79,7 @@ ISR(PCINT1_vect)
     };
     static uint8_t old = 0;
     uint8_t now = PINC;
-
-    int8_t delta = TRANSFORM[((old & 0x3) << 2) | (now & 0x3)];
-    gDebug = delta;
+    uint8_t delta = TRANSFORM[((old & 0x3) << 2) | (now & 0x3)];
     if (delta == 2) ++gAerror;
     else gA += delta;
     delta = TRANSFORM[(old & 0xc) | ((now & 0xc) >> 2)];
@@ -155,12 +154,13 @@ int main()
     PORTB = 0;
     // Pullups for rotary encoder inputs
     //PORTC = (1 << PORTC0) | (1 << PORTC1) | (1 << PORTC2) | (1 << PORTC3);
+    PORTC = 0;
     // enable motor controller
     PORTD = (1 << PORTD4);
 
     DDRB = (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB4) | (1 << DDB5);
     DDRC = 0;
-    DDRD = (1 << DDD2) | (1 << DDD4) | (1 << DDD7);
+    DDRD = (1 << DDD1) | (1 << DDD2) | (1 << DDD3) | (1 << DDD4) | (1 << DDD7);
 
     PCICR = (1 << PCIE1);
     // Enable pin change irq's for rotery encoders
@@ -174,19 +174,44 @@ int main()
 
     // maximum for desired pwm frequency
     ICR1 = TIMER1_MAX;
+
+    UBRR0 = 103;
+    UCSR0A = (1 << U2X0);
+    UCSR0B = (1 << TXEN0);
+    //UCSR0B = (1 << RXCIE0) | (1 << UDRIE0) | (1 << TXEN0) | (1 << RXEN0);
+    UCSR0C = 6;
+    sbi(UCSR0A, TXC0);
+
     sei();
 
-    setSpeed(true, TIMER1_MAX / 2);
-    while (gA < 360)
+    uint8_t count = 0;
+    uint8_t a = gA;
+    int16_t delta = 0;
+    while (gAerror == 0 && count < 10)
     {
-        //PORTD = (PORTD & (0xf3)) | ((gAerror & 1) << 2) | ((gA & 1) << 3);
-        PORTD = (PORTD & 0xf3) | ((gA & 0x3) << 2);
+        setSpeed(true, TIMER1_MAX);
+        while (delta < 360 && gAerror == 0)
+        {
+            if (UCSR0A & (1 << UDRE0)) UDR0 = gA;
+            uint8_t an = gA;
+            delta += (int8_t)(an - a);
+            a = an;
+        }
+        setSpeed(true, -((int16_t)TIMER1_MAX));
+        while (delta > 0 && gAerror == 0)
+        {
+            uint8_t an = gA;
+            delta += (int8_t)(an - a);
+            a = an;
+        }
+        ++count;
     }
-    setSpeed(true, -((int16_t)TIMER1_MAX) / 2);
-    while (gA > 0);
     setSpeed(true, 0);
 
-    while (true);
+    while (true)
+    {
+
+    }
 
     return 0;
 }
