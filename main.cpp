@@ -44,56 +44,6 @@ static volatile uint8_t gAerror = 0;
 static volatile uint8_t gBerror = 0;
 static volatile uint8_t gDebug = 0;
 
-ISR(TIMER1_OVF_vect)
-{
-    //++gMs;
-}
-
-/* PCINT0-7 */
-ISR(PCINT0_vect)
-{
-
-}
-
-/* PCINT8-14 */
-ISR(PCINT1_vect)
-{
-    static const int8_t TRANSFORM[16] = {
-        // old AB -> AB now
-        0,  // 00 -> 00 no change
-        1,  // 00 -> 01 cw
-        -1, // 00 -> 10 ccw
-        2,  // 00 -> 11 error
-        -1, // 01 -> 00 ccw
-        0,  // 01 -> 01 no change
-        2,  // 01 -> 10 error
-        1,  // 01 -> 11 cw
-        1,  // 10 -> 00 cw
-        2,  // 10 -> 01 error
-        0,  // 10 -> 10 no change
-        -1, // 10 -> 11 ccw
-        2,  // 11 -> 00 error
-        -1, // 11 -> 01 ccw
-        1,  // 11 -> 10 cw
-        0,  // 11 -> 11 no change
-    };
-    static uint8_t old = 0;
-    uint8_t now = PINC;
-    uint8_t delta = TRANSFORM[((old & 0x3) << 2) | (now & 0x3)];
-    if (delta == 2) ++gAerror;
-    else gA += delta;
-    delta = TRANSFORM[(old & 0xc) | ((now & 0xc) >> 2)];
-    if (delta == 2) ++gBerror;
-    else gB += delta;
-    old = now;
-}
-
-/* PCINT16-23 */
-ISR(PCINT2_vect)
-{
-
-}
-
 void setSpeed(bool a, int16_t speed)
 {
     bool cw = true;
@@ -149,6 +99,77 @@ void setSpeed(bool a, int16_t speed)
     }
 }
 
+static const uint16_t kp = 20, kii = 512, kd = 0;
+static uint8_t a = gA, b = gB;
+static uint32_t posA = 0, posB = 0;
+static int16_t i = 0;
+static uint16_t eold = 0;
+
+ISR(TIMER1_OVF_vect)
+{
+    uint8_t an = gA;
+    posA += (int8_t)(an - a);
+    a = an;
+    uint8_t bn = gB;
+    posB += (int8_t)(bn - b);
+    b = bn;
+
+    int16_t e = posB - posA;
+    i += e;
+    if (i > 16000) i = 16000;
+    else if (i < -16000) i = -16000;
+    int16_t y = kp * e + i / kii + kd * (e - eold);
+    eold = e;
+
+    setSpeed(true, y);
+}
+
+/* PCINT0-7 */
+ISR(PCINT0_vect)
+{
+
+}
+
+/* PCINT8-14 */
+ISR(PCINT1_vect)
+{
+    static const int8_t TRANSFORM[16] = {
+        // old AB -> AB now
+        0,  // 00 -> 00 no change
+        1,  // 00 -> 01 cw
+        -1, // 00 -> 10 ccw
+        2,  // 00 -> 11 error
+        -1, // 01 -> 00 ccw
+        0,  // 01 -> 01 no change
+        2,  // 01 -> 10 error
+        1,  // 01 -> 11 cw
+        1,  // 10 -> 00 cw
+        2,  // 10 -> 01 error
+        0,  // 10 -> 10 no change
+        -1, // 10 -> 11 ccw
+        2,  // 11 -> 00 error
+        -1, // 11 -> 01 ccw
+        1,  // 11 -> 10 cw
+        0,  // 11 -> 11 no change
+    };
+    static uint8_t old = 0;
+    uint8_t now = PINC;
+    uint8_t delta = TRANSFORM[((old & 0x3) << 2) | (now & 0x3)];
+    if (delta == 2) ++gAerror;
+    else gA += delta;
+    delta = TRANSFORM[(old & 0xc) | ((now & 0xc) >> 2)];
+    if (delta == 2) ++gBerror;
+    else gB += delta;
+    old = now;
+}
+
+/* PCINT16-23 */
+ISR(PCINT2_vect)
+{
+
+}
+
+
 int main()
 {
     PORTB = 0;
@@ -184,33 +205,44 @@ int main()
 
     sei();
 
-    uint8_t count = 0;
-    uint8_t a = gA;
-    int16_t delta = 0;
-    while (gAerror == 0 && count < 10)
+    while (gAerror == 0 && gBerror == 0)
     {
-        setSpeed(true, TIMER1_MAX);
-        while (delta < 360 && gAerror == 0)
-        {
-            if (UCSR0A & (1 << UDRE0)) UDR0 = gA;
-            uint8_t an = gA;
-            delta += (int8_t)(an - a);
-            a = an;
-        }
-        setSpeed(true, -((int16_t)TIMER1_MAX));
-        while (delta > 0 && gAerror == 0)
-        {
-            uint8_t an = gA;
-            delta += (int8_t)(an - a);
-            a = an;
-        }
-        ++count;
+        if (UCSR0A & (1 << UDRE0)) UDR0 = gB;
+
+
+//        setSpeed(true, TIMER1_MAX);
+//        while (delta < 360 && gAerror == 0)
+//        {
+//            uint8_t an = gA;
+//            delta += (int8_t)(an - a);
+//            a = an;
+//        }
+//        setSpeed(true, -((int16_t)TIMER1_MAX));
+//        while (delta > 0 && gAerror == 0)
+//        {
+//            uint8_t an = gA;
+//            delta += (int8_t)(an - a);
+//            a = an;
+//        }
+//        ++count;
     }
     setSpeed(true, 0);
 
+
+    const char* DONE = "DONE  ";
+    int offset = 0;
     while (true)
     {
-
+        if (UCSR0A & (1 << UDRE0))
+        {
+            if (offset < 6) UDR0 = DONE[offset];
+            else if (offset == 6) UDR0 = gAerror / 16 + 'a';
+            else if (offset == 7) UDR0 = gAerror % 16 + 'a';
+            else if (offset == 8) UDR0 = gBerror / 16 + 'a';
+            else if (offset == 9) UDR0 = gBerror % 16 + 'a';
+            else offset = 0;
+            ++offset;
+        }
     }
 
     return 0;
