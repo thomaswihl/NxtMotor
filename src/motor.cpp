@@ -1,4 +1,3 @@
-#include "NxtMotor.h"
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -12,26 +11,26 @@
  * PORT  Function       Arduino HW
  * PD0                    RXD
  * PD1                    TXD
- * PD2   I/O               2              ROT3A
- * PD3   Timer2 B Output   3              MOT2ENA
- * PD4   I/O               4              ROT3B
- * PD5   Timer0 B Output   5              MOT3A
- * PD6   Timer0 A Output   6              MOT3ENA
- * PD7   I/O               7              MOT3B
+ * PD2   I/O               2              M3_ENCA
+ * PD3   Timer2 B Output   3              M2_IN2
+ * PD4   I/O               4              M3_ENCB
+ * PD5   Timer0 B Output   5              M3_IN2
+ * PD6   Timer0 A Output   6              M3_ENA
+ * PD7   I/O               7              M3_IN1
  *
  * PB0   I/O               8n
- * PB1   Timer1 A Output   9              MOT1ENA
- * PB2   Timer1 B Output  10              MOT1A
- * PB3   Timer2 A Output  11   DBG MOSI   MOT2A
- * PB4   I/O              12   DBG MISO   MOT1B
- * PB5   I/O              13   DBG SCK    MOT2B
+ * PB1   Timer1 A Output   9              M1_ENA
+ * PB2   Timer1 B Output  10              M1_IN1
+ * PB3   Timer2 A Output  11   DBG MOSI   M2_ENA
+ * PB4   I/O              12   DBG MISO   M1_IN2
+ * PB5   I/O              13   DBG SCK    M2_IN1
  * PB6                   XTAL1
  * PB7                   XTAL2
  *
- * PC0   PCINT8           A0              ROT1B
- * PC1   PCINT9           A1              ROT1A
- * PC2   PCINT10          A2              ROT2B
- * PC3   PCINT11          A3              ROT2A
+ * PC0   PCINT8           A0              M1_ENCB
+ * PC1   PCINT9           A1              M1_ENCA
+ * PC2   PCINT10          A2              M2_ENCB
+ * PC3   PCINT11          A3              M2_ENCA
  * PC4   PCINT12          A4              I2C SDA
  * PC5   PCINT13          A5              I2C SCL
  * PC6   PCINT13         RESET
@@ -293,6 +292,20 @@ ISR(TWI_vect)
 
 
 int main()
+{
+    sbi(PORTD, PORTD2);
+    sbi(DDRD, PORTD2);
+    for (uint32_t i = 0; i < 8000000; ++i)
+    {
+        __asm volatile ("nop");
+    }
+    cbi(PORTD, PORTD2);
+    while (true)
+    {
+    }
+}
+
+int main2()
 {
     PORTB = 0;
     PORTC = 0;
