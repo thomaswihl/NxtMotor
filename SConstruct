@@ -1,18 +1,19 @@
 import glob
 import fileinput
+import os
 
 # Name of the executable
 target = 'nxt'
 # Your Atmel CPU
-mcu = 'atmega328p'
+mcu = 'atmega88'
 # Optimization level, choose from 0-3, s, g, ...
 opt = '2'
 
 env = DefaultEnvironment()
 env.PrependENVPath('PATH', '/home/thomas/toolchain/avr8-gnu-toolchain-linux_x86_64/bin/')
-env.Replace(CCFLAGS = '-O2 -D__AVR_ATmega328P__')
-env.Replace(CC = 'avr-gcc')
-env.Replace(CXX = 'avr-g++')
+env.Replace(CPPFLAGS = '-O' + opt + ' -std=c++11')
+env.Replace(CC = 'avr-gcc -mmcu=' + mcu)
+env.Replace(CXX = 'avr-g++ -mmcu=' + mcu)
 
 sourceFiles = []
 headerFiles = []
@@ -20,6 +21,7 @@ projectFilesFiles = glob.glob('*.files');
 for file in projectFilesFiles:
     with open(file) as f:
         for line in f.readlines():
+            # line = os.path.basename(line.strip())
             line = line.strip()
             if line.endswith('.cpp') or line.endswith('.c'):
                 sourceFiles.append(line);
@@ -33,7 +35,7 @@ projectIncludesFiles = glob.glob('*.includes');
 for file in projectIncludesFiles:
     with open(file) as f:
         for line in f.readlines():
-            includePaths.append(line.strip())
+            includePaths.append(os.path.basename(line.strip()))
 
 defines = {}
 projectDefines = glob.glob('*.config');
@@ -41,12 +43,29 @@ for file in projectDefines:
     with open(file) as f:
         for line in f.readlines():
             parts = line.strip().split()
-            if len(parts) > 2 and parts[0] == '#define':
+            if len(parts) > 2 and parts[0] == '#define' and 'IGNORE' not in line:
                 defines[parts[1]] = ' '.join(parts[2:])
 
-Program(target + '.elf', sourceFiles, CPPPATH = includePaths, CPPDEFINES=defines)
-# Make hex
-env.Command(target + ".hex", target + ".elf", 'avr-objcopy -R .eeprom -O ihex $SOURCE $TARGET')
+envLeft = env.Clone()
+envLeft['VARIANT'] = 'left'
 
-# Show memory usage
-env.Command(None, target + ".elf", "avr-size $SOURCE")
+envRight = env.Clone()
+envRight['VARIANT'] = 'right'
+
+envCenter = env.Clone()
+envCenter['VARIANT'] = 'center'
+
+
+Export('target sourceFiles includePaths defines')
+
+env = envLeft
+Export('env')
+SConscript('SConscript', variant_dir=env['VARIANT'], src='src', duplicate=0)
+
+env = envRight
+Export('env')
+SConscript('SConscript', variant_dir=env['VARIANT'], src='src', duplicate=0)
+
+env = envCenter
+Export('env')
+SConscript('SConscript', variant_dir=env['VARIANT'], src='src', duplicate=0)

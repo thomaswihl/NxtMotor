@@ -1,3 +1,4 @@
+#if defined(LEFT) || defined(RIGHT)
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -5,79 +6,62 @@
 #include <stdint.h>
 #include <limits.h>
 
-// /home/thomas/bin/arduino-1.0.5/hardware/tools/avrdude -C/home/thomas/bin/arduino-1.0.5/hardware/tools/avrdude.conf -patmega328p -P/dev/ttyUSB0 -carduino -b57600 -D -Uflash:w:build-cli/NxtMotor.hex
+#include "common.h"
+//#include "uart.h"
+
+// /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude -C/home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude.conf -patmega328p -P/dev/ttyUSB0 -carduino -b57600 -D -Uflash:w:build-cli/NxtMotor.hex
+// /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude -v -C /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude.conf -c avrispmkII -p m328p -P usb
 
 /* Pin usage
  * PORT  Function       Arduino HW
- * PD0                    RXD
- * PD1                    TXD
- * PD2   I/O               2              M3_ENCA
- * PD3   Timer2 B Output   3              M2_IN2
- * PD4   I/O               4              M3_ENCB
- * PD5   Timer0 B Output   5              M3_IN2
- * PD6   Timer0 A Output   6              M3_ENA
- * PD7   I/O               7              M3_IN1
+ * ------------------------------------------------------
+ * PD0   PCINT16          RXD               E3A
+ * PD1   PCINT17          TXD               E3B
+ * PD2   I/O               2
+ * PD3   Timer2 B Output   3                M3IN1
+ * PD4   I/O               4                M3IN2
+ * PD5   Timer0 B Output   5                M3ENA
+ * PD6   Timer0 A Output   6                M2IN1
+ * PD7   I/O               7                M2IN2
  *
- * PB0   I/O               8n
- * PB1   Timer1 A Output   9              M1_ENA
- * PB2   Timer1 B Output  10              M1_IN1
- * PB3   Timer2 A Output  11   DBG MOSI   M2_ENA
- * PB4   I/O              12   DBG MISO   M1_IN2
- * PB5   I/O              13   DBG SCK    M2_IN1
+ * PB0   I/O               8n               M1IN2
+ * PB1   Timer1 A Output   9                M2ENA
+ * PB2   Timer1 B Output  10                M1IN1
+ * PB3   Timer2 A Output  11   DBG MOSI     M1ENA
+ * PB4   I/O              12   DBG MISO
+ * PB5   I/O              13   DBG SCK
  * PB6                   XTAL1
  * PB7                   XTAL2
  *
- * PC0   PCINT8           A0              M1_ENCB
- * PC1   PCINT9           A1              M1_ENCA
- * PC2   PCINT10          A2              M2_ENCB
- * PC3   PCINT11          A3              M2_ENCA
- * PC4   PCINT12          A4              I2C SDA
- * PC5   PCINT13          A5              I2C SCL
+ * PC0   PCINT8           A0                E2A
+ * PC1   PCINT9           A1                E2B
+ * PC2   PCINT10          A2                E1A
+ * PC3   PCINT11          A3                E1B
+ * PC4   PCINT12          A4                SDA
+ * PC5   PCINT13          A5                SCL
  * PC6   PCINT13         RESET
+ *
+ * ADC6
+ * ADC7                                     VBAT 1k2 -> MEAS -> 1k2 -> GND
  */
 
-#define SPI_PORT PORTB
-#define SPI_DDR DDRB
-#define SPI_PIN PINB
-#define SPI_SS_PIN PORTB2
-#define SPI_MOSI_PIN PORTB3
-#define SPI_MISO_PIN PORTB4
-#define SPI_SCK_PIN PORTB5
+#define TW_BUFFER_SIZE 6    // I2C buffer size = 1 (address) + 1 (Command) + 4 (data)
 
-#define M1IN1_PORT PORTB
-#define M1IN1_DDR DDRB
-#define M1IN1_PIN PORTB2
-#define M1IN1_PWM OCR1B
+volatile uint8_t gTwBuffer[TW_BUFFER_SIZE];
+volatile uint8_t gTwTxLen = 0;
+volatile uint8_t gTwRxLen = 0;
 
-#define M1IN2_PORT PORTB
-#define M1IN2_DDR DDRB
-#define M1IN2_PIN PORTB4
 
-#define M2IN1_PORT PORTB
-#define M2IN1_DDR DDRB
-#define M2IN1_PIN PORTB3
-#define M2IN1_PWM OCR2A
+enum MotorFunction { In1, In2, Enable, EncoderA, EncoderB, PWM_In1, PWM_Enable };
+enum Pin { B0, B1, B2, B3, B4, B5, B6, B7, C0, C1, C2, C3, C4, C5, C6, C7, D0, D1, D2, D3, D4, D5, D6, D7 };
 
-#define M2IN2_PORT PORTB
-#define M2IN2_DDR DDRB
-#define M2IN2_PIN PORTB5
+const uint8_t ADDR[3][7] = {
+/*   In1 In2 Enable ENCA ENCB PWM_IN1 PWM_ENA   */
+    { B2, B0,  B3,   C2,  C3, (uint16_t)&OCR1BL,(uint16_t)&OCR2A },     // M1
+    { D6, D7,  B1,   C0,  C1, (uint16_t)&OCR0A, (uint16_t)&OCR1AL },     // M2
+    { D3, D4,  D5,   D0,  D1, (uint16_t)&OCR2B, (uint16_t)&OCR0B },     // M3
+};
 
-#define M1ENA_PORT PORTB
-#define M1ENA_DDR DDRB
-#define M1ENA_PIN PORTB1
-
-#define M2ENA_PORT PORTD
-#define M2ENA_DDR DDRD
-#define M2ENA_PIN PORTD3
-
-#ifndef cbi
-#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
-#endif
-#ifndef sbi
-#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
-#endif
-#define MIN(X,Y) ((X) < (Y) ? (X) : (Y))
-#define MAX(X,Y) ((X) > (Y) ? (X) : (Y))
 typedef uint32_t encoder_t;
 typedef int32_t controller_t;
 
@@ -99,18 +83,52 @@ struct Motor
 
 
 static const uint16_t PWM_MAX = 255;
-static const unsigned MOTOR_COUNT = 1;
-static const unsigned ENCODER_COUNT = 2;
+static const unsigned MOTOR_COUNT = 3;
+static const unsigned ENCODER_COUNT = 3;
 
 
 static volatile uint16_t gMs = 0;
 
 volatile static Motor gMotor[MOTOR_COUNT] = {0};
 volatile static Encoder gEncoder[ENCODER_COUNT] = {0};
-volatile static uint8_t gSpiData = 0;
+
+void setPortBit(uint8_t offset, uint8_t port, bool on)
+{
+    uint8_t bit = port & 7;
+    offset += (port >> 3) * 3;
+//    Uart::printChar(on ? 's' : 'r');
+//    Uart::printValueHex(offset);
+//    Uart::printChar(':');
+//    Uart::printValue(bit);
+//    Uart::printChar(' ');
+    if (on) _SFR_IO8(offset) |= _BV(bit);
+    else _SFR_IO8(offset) &= _BV(bit);
+}
+
+inline void setPin(uint8_t port, bool on)
+{
+    setPortBit(5, port, on);
+}
+
+enum PortType { Input, Output, PullUp };
+
+void setPort(uint8_t port, PortType type)
+{
+    bool setPort = false;
+    bool setDirection = false;
+    switch (type)
+    {
+    case Input:  setPort = false; setDirection = false; break;
+    case Output: setPort = false; setDirection = true;  break;
+    case PullUp: setPort = true;  setDirection = false; break;
+    }
+    setPortBit(5, port, setPort);
+    setPortBit(4, port, setDirection);
+}
 
 void setSpeed(uint8_t motorIndex, int16_t speed)
 {
+    if (motorIndex >= MOTOR_COUNT) return;
     bool cw = true;
     if (speed < 0)
     {
@@ -118,32 +136,26 @@ void setSpeed(uint8_t motorIndex, int16_t speed)
         speed = -speed;
     }
     if (speed > PWM_MAX) speed = PWM_MAX;
-    if (motorIndex == 0)
+//    Uart::printValueHex(ADDR[motorIndex][PWM_In1]);
+//    Uart::printChar(':');
+//    Uart::printValueHex(OCR2A);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(OCR1B);
+//    Uart::print("\r\n");
+    if (cw)
     {
-        if (cw)
-        {
-            M1IN1_PWM = speed;
-            cbi(M1IN2_PORT, M1IN2_PIN);
-        }
-        else
-        {
-            M1IN1_PWM = PWM_MAX - speed;
-            sbi(M1IN2_PORT, M1IN2_PIN);
-        }
+        _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = speed;
+        setPin(ADDR[motorIndex][In2], false);
     }
     else
     {
-        if (cw)
-        {
-            M2IN1_PWM = speed;
-            cbi(M2IN2_PORT, M2IN2_PIN);
-        }
-        else
-        {
-            M2IN1_PWM = PWM_MAX - speed;
-            sbi(M2IN2_PORT, M2IN2_PIN);
-        }
+        _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = PWM_MAX - speed;
+        setPin(ADDR[motorIndex][In2], true);
     }
+//    Uart::printValueHex(OCR2A);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(OCR1B);
+//    Uart::print("\r\n");
 }
 
 
@@ -153,48 +165,39 @@ ISR(TIMER0_OVF_vect)
 
 ISR(TIMER1_OVF_vect)
 {
-    static const int16_t kp = 32, kiShift = 2, kd = 32;
-    static const int16_t I_MAX = PWM_MAX >> 2;
-    //sbi(PORTD, PORTD1);
-    sei();
+//    static const int16_t kp = 32, kiShift = 2, kd = 32;
+//    static const int16_t I_MAX = PWM_MAX >> 2;
+//    sei();
 
-    ++gMs;
-    if ((gMs & 1023) != 0) return;
+//    ++gMs;
+//    if ((gMs & 1023) != 0) return;
 
-    for (int i = 0; i < MOTOR_COUNT; ++i)
-    {
-        controller_t error = gMotor[i].targetPos - gEncoder[gMotor[i].encoder].encoderPos;
-        if (error == 0)
-        {
-            gMotor[i].integralError = 0;
-        }
-        else
-        {
-            gMotor[i].integralError += error;
-            if (gMotor[i].integralError > I_MAX) gMotor[i].integralError = I_MAX;
-            else if (gMotor[i].integralError < -I_MAX) gMotor[i].integralError = -I_MAX;
-        }
-        controller_t y = kp * error + (gMotor[i].integralError << kiShift) + kd * (error - gMotor[i].previousError);
-        gMotor[i].previousError = error;
+//    for (int i = 0; i < MOTOR_COUNT; ++i)
+//    {
+//        controller_t error = gMotor[i].targetPos - gEncoder[gMotor[i].encoder].encoderPos;
+//        if (error == 0)
+//        {
+//            gMotor[i].integralError = 0;
+//        }
+//        else
+//        {
+//            gMotor[i].integralError += error;
+//            if (gMotor[i].integralError > I_MAX) gMotor[i].integralError = I_MAX;
+//            else if (gMotor[i].integralError < -I_MAX) gMotor[i].integralError = -I_MAX;
+//        }
+//        controller_t y = kp * error + (gMotor[i].integralError << kiShift) + kd * (error - gMotor[i].previousError);
+//        gMotor[i].previousError = error;
 
-        gMotor[i].y = y;
-        setSpeed(i, y >> 4);
-    }
-    //cbi(PORTD, PORTD1);
+//        gMotor[i].y = y;
+//        setSpeed(i, y >> 4);
+//    }
 }
 
 ISR(TIMER2_OVF_vect)
 {
 }
 
-/* PCINT0-7 */
-ISR(PCINT0_vect)
-{
-
-}
-
-/* PCINT8-14 */
-ISR(PCINT1_vect)
+void evalEncoders()
 {
     static const int8_t TRANSFORM[16] = {
         // old AB -> AB now
@@ -215,9 +218,8 @@ ISR(PCINT1_vect)
         1,  // 11 -> 10 cw
         0,  // 11 -> 11 no change
     };
-    //sbi(PORTD, PORTD1);
     sei();
-    uint8_t now = PINC;
+    uint8_t now = (PINC & 0x0f) | ((PIND & 3) << 4);
     uint8_t shift = 0;
     for (uint8_t i = 0; i < ENCODER_COUNT; ++i)
     {
@@ -228,109 +230,109 @@ ISR(PCINT1_vect)
         shift += 2;
         gEncoder[i].lastStatus = status;
     }
-    //cbi(PORTD, PORTD1);
+}
+
+/* PCINT0-7 */
+ISR(PCINT0_vect)
+{
+
+}
+
+/* PCINT8-14 */
+ISR(PCINT1_vect)
+{
+    evalEncoders();
 }
 
 /* PCINT16-23 */
 ISR(PCINT2_vect)
 {
-
+    evalEncoders();
 }
 
-ISR(SPI_STC_vect)
+void executeCommand()
 {
-    SPDR = gSpiData++;
-    (void)SPDR;
-}
-
-void putc(uint8_t c)
-{
-    while (!(UCSR0A & (1 << UDRE0)))
-    { }
-    UDR0 = c;
-}
-
-
-static const uint32_t POW[] = { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000 };
-
-void print(uint8_t data)
-{
-    for (int i = 2; i >= 0; --i) putc(((data / (uint8_t)POW[i]) % 10) + '0');
-}
-
-void print(uint16_t data)
-{
-    for (int i = 4; i >= 0; --i) putc(((data / (uint16_t)POW[i]) % 10) + '0');
-}
-
-void print(int16_t data)
-{
-    if (data < 0)
+    gTwTxLen = 0;
+    if (gTwRxLen == 0) return;
+    switch (static_cast<Command>(gTwBuffer[0]))
     {
-        putc('-');
-        data = -data;
+    case Command::SetPwm:
+        setSpeed(gTwBuffer[1], (uint16_t)gTwBuffer[2] | (uint16_t)(gTwBuffer[3] << 8));
+        break;
+    case Command::SetSpeed:
+    case Command::SetPosition:
+    case Command::Stop:
+        setSpeed(gTwBuffer[1], 0);
+        break;
+    case Command::GetPosition:
+        *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[gTwBuffer[1]].encoderPos;
+        gTwTxLen = 4;
+        break;
     }
-    for (int i = 4; i >= 0; --i) putc(((data / (uint16_t)POW[i]) % 10) + '0');
-}
-
-void print(uint32_t data)
-{
-    for (int i = 9; i >= 0; --i) putc(((data / POW[i]) % 10) + '0');
 }
 
 ISR(TWI_vect)
 {
+    static uint8_t offset = 0;
+
+//    Uart::printValueHex(TWSR);
+//    Uart::print(" ");
+
     switch (TWSR & 0xf8)
     {
-    case 0xa8:
-    case 0xb8:
-        TWDR = gSpiData++;
+    case 0xa8:  // SLA+R received
+    case 0xb0:  // Arbitration lost, SLA+R received
+        offset = 0;
+        // Fall through
+    case 0xb8:  // data transmitted + ACK
+        if (offset < TW_BUFFER_SIZE) TWDR = gTwBuffer[offset++];
+        else TWDR = 0xff;
+        if (gTwTxLen == offset)
+        {
+            TWCR &= ~_BV(TWEA);
+        }
+        break;
+    case 0x60:  // SLA+W received
+    case 0x68:  // Arbitration lost, SLA+W received
+    case 0x70:  // General call received
+    case 0x78:  // Arbitration lost, General call received
+        gTwRxLen = 0;
+        break;
+    case 0x80:  // Data received + ACK
+    case 0x88:  // Data received + NACK
+    case 0x90:  // General call: Data received + ACK
+    case 0x98:  // General call: Data received + NACK
+        if (gTwRxLen < TW_BUFFER_SIZE) gTwBuffer[gTwRxLen++] = TWDR;
+        break;
+    case 0xa0:  // STOP or REPEATED START
+        executeCommand();
+        break;
+    case 0xc0:  // data transmitted + NACK
+    case 0xc8:  // last data transmitted + ACK
+        // We are done
+        TWCR |= _BV(TWEA);
         break;
     }
-    sbi(TWCR, TWINT);
+    TWCR |= _BV(TWINT);
 }
 
 
-int main()
+void init()
 {
-    sbi(PORTD, PORTD2);
-    sbi(DDRD, PORTD2);
-    for (uint32_t i = 0; i < 8000000; ++i)
-    {
-        __asm volatile ("nop");
-    }
-    cbi(PORTD, PORTD2);
-    while (true)
-    {
-    }
-}
-
-int main2()
-{
-    PORTB = 0;
-    PORTC = 0;
-    PORTD = 0;
-    DDRB = 0;
-    DDRC = 0;
-    DDRD = 0;
-
-    sbi(M1IN1_DDR, M1IN1_PIN);
-    sbi(M1IN2_DDR, M1IN2_PIN);
-    sbi(M2IN1_DDR, M2IN1_PIN);
-    sbi(M2IN2_DDR, M2IN2_PIN);
-    sbi(M1ENA_DDR, M1ENA_PIN);
-    sbi(M2ENA_DDR, M2ENA_PIN);
-    sbi(M1ENA_PORT, M1ENA_PIN);
-//    sbi(SPI_DDR, SPI_MISO_PIN);
-//    sbi(SPCR, SPIE);
-//    sbi(SPCR, SPE);
-
+#if defined(LEFT)
+    TWAR = TW_LEFT_ADDR;
+#elif defined(RIGHT)
+    TWAR = TW_RIGHT_ADDR;
+#endif
+    TWCR = _BV(TWEA) | _BV(TWEN) | _BV(TWIE);
 
     PCICR = (1 << PCIE1);
     // Enable pin change irq's for rotery encoders
-    PCMSK1 = (1 << PCINT8) | (1 << PCINT9) | (1 << PCINT10) | (1 << PCINT11);
+    PCMSK0 = 0;
+    PCMSK1 = _BV(PCINT8) | _BV(PCINT9) | _BV(PCINT10) | _BV(PCINT11);
+    PCMSK2 = _BV(PCINT16) | _BV(PCINT17);
 
-    /* Clear on compare match
+    /* TIMER0: Clear on compare match
      * Mode 1: PWM, Phase Correct, Top = 0xff, Update of OCRA at top, TOV at bottom
      * CLK I/O /8 prescaling
      */
@@ -338,126 +340,74 @@ int main2()
     TCCR0B = (1 << CS01);
     TIMSK0 = (1 << TOIE0);
 
-    /* Clear on compare match
+    /* TIMER1: Clear on compare match
      * Mode 8: PWM, Phase and Frequence Correct, Top = ICR1
      * CLK I/O no prescaler
      */
-    TCCR1A = /*(1 << COM1A1) | */(1 << COM1B1);
+    TCCR1A = (1 << COM1A1) | (1 << COM1B1);
     TCCR1B = (1 << WGM13) | (1 << CS10);
     TIMSK1 = (1 << TOIE1);
     ICR1 = PWM_MAX;
 
-    UCSR0A = 0;
-    UCSR0B = 0;
-    UCSR0C = 0;
-    // Serial TXO
-    sbi(DDRD, DDD1);
-    cbi(PORTD, PORTD1);
+    /* TIMER2: Clear on compare match
+     * Mode 1: PWM, Phase Correct, Top = 0xff, Update of OCRA at top, TOV at bottom
+     * CLK I/O /8 prescaling
+     */
+    TCCR2A = (1 << COM2A1) | (1 << COM2B1) | (1 << WGM20);
+    TCCR2B = (1 << CS20);
+    TIMSK2 = (1 << TOIE2);
 
-#if 1
-    UBRR0 = 103;
-    UCSR0A = (1 << U2X0);
-    UCSR0B = (1 << TXEN0);
-    UCSR0C = 6;
-    sbi(UCSR0A, TXC0);
-#endif
-
-    TWAR = 0x18 << 1;
-    TWCR = (1 << TWEA) | (1 << TWEN) | (1 << TWIE);
-
-
-    for (int i = 0; i < ENCODER_COUNT; ++i)
-    {
-        gEncoder[i].lastStatus = (PINC >> (i * 2)) & 3;
-    }
-    for (int i = 0; i < MOTOR_COUNT; ++i)
+    evalEncoders();
+    for (int8_t i = MOTOR_COUNT - 1; i >= 0; --i)
     {
         gMotor[i].encoder = i;
     }
 
-//    CLKPR = 0x80;
-//    CLKPR = 0x02;
+    //Uart::init();
+    //Uart::print("\r\n");
+
+
     sei();
 
-    //setSpeed(0, TIMER1_MAX);
-    //setSpeed(1, TIMER1_MAX);
-    uint8_t misses = 0;
-    uint8_t lastMs = gMs;
-    uint8_t data = 0;
-
-//    while (true)
-//    {
-//        while (!(TWCR & 0x80)) { }
-//        print(TWSR);
-//        putc(10);
-//        putc(13);
-
-//        if (TWSR == 0xa8 || TWSR == 0xb8) TWDR = data++;
-//        sbi(TWCR, TWINT);
-//    }
-    int count = 0;
-    while (true)
+    for (int i = 0; i < MOTOR_COUNT; ++i)
     {
-        uint8_t ms = gMs;
-        if ((SPI_PIN & (1 << SPI_SS_PIN))) gSpiData = 0;
-        if (lastMs != ms)
-        {
-//            if (ms - lastMs > 1 || gEncoder[0].encoderError != 0 || gEncoder[1].encoderError != 0 || gEncoder[2].encoderError != 0)
-//            {
-//                misses += ms - lastMs - 1;
-//                print(misses);
-//                putc(' ');
-//                print(gEncoder[0].encoderError);
-//                putc(' ');
-//                print(gEncoder[1].encoderError);
-//                putc(' ');
-//                print(gEncoder[2].encoderError);
-//                putc('\r');
-//                putc('\n');
-//                gEncoder[0].encoderError = 0;
-//                gEncoder[1].encoderError = 0;
-//                gEncoder[2].encoderError = 0;
-//                ms = gMs;
-//            }
-            lastMs = ms;
-        }
-        //gMotor[0].targetPos = gMotor[0].targetPos + 5;// << 5;
-        gMotor[0].targetPos = gEncoder[1].encoderPos << 5;
-//        putc(M1IN1_PWM);
-//        putc(0);
-//        putc(0);
-//        putc(0);
-//        putc(0);
-//        putc(0);
-//        putc(0);
-//        putc(0);
-        putc(gMotor[0].targetPos);
-        putc(gMotor[0].targetPos >> 8);
-        putc(gEncoder[0].encoderPos);
-        putc(gEncoder[0].encoderPos >> 8);
-        putc(gMotor[0].previousError);
-        putc(gMotor[0].previousError >> 8);
-        putc(gMotor[0].y);
-        putc(gMotor[0].y >> 8);
-        if (count++ >= 1024)
-        {
-            count = 0;
-            putc(0x12);
-            putc(0x34);
-            putc(0x56);
-            putc(0x78);
-
-        }
-//        print(gEncoder[0].encoderPos);
-//        putc(' ');
-//        print(gEncoder[1].encoderPos);
-//        putc(' ');
-//        print(gMotor[0].previousError);
-//        putc('\r');
-//        putc('\n');
+        setPort(ADDR[i][In1], Output);
+        setPort(ADDR[i][In2], Output);
+        setPin(ADDR[i][In2], true);
+        setPort(ADDR[i][Enable], Output);
+        _SFR_MEM8(ADDR[i][PWM_In1]) = PWM_MAX;
+        _SFR_MEM8(ADDR[i][PWM_Enable]) = PWM_MAX;
     }
-    setSpeed(0, 0);
-    setSpeed(1, 0);
+    //Uart::print("\r\n");
+//    Uart::printValueHex(PORTB);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(DDRB);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(PORTC);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(DDRC);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(PORTD);
+//    Uart::printChar(' ');
+//    Uart::printValueHex(DDRD);
+    //    Uart::printValueHex(TCNT0);
+    //    Uart::printChar(' ');
+    //    Uart::printValueHex(TCNT1);
+    //    Uart::printChar(' ');
+    //    Uart::printValueHex(TCNT2);
+    //    Uart::printChar(' ');
+    //    Uart::printValueHex(TCNT0);
+    //    Uart::printChar(' ');
+    //    Uart::printValueHex(TCNT1);
+    //    Uart::printChar(' ');
+    //    Uart::printValueHex(TCNT2);
+    //    Uart::print("\r\n");
 
-    return 0;
 }
+
+void work()
+{
+
+}
+
+#endif

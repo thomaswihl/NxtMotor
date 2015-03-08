@@ -1,0 +1,10 @@
+.directory
+*.o
+*.hex
+*.elf
+.sconsign.dblite
+*.creator.user
+center
+left
+right
+timing.ods
