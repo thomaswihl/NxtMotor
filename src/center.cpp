@@ -47,6 +47,7 @@ volatile uint8_t gTwBuffer[TW_BUFFER_SIZE];
 volatile uint8_t gTwTxLen = 0;
 volatile uint8_t gTwRxLen = 0;
 volatile bool gTwReady = false;
+volatile uint8_t gRequestedMotorPos = -1;
 
 void printPrompt()
 {
@@ -79,6 +80,41 @@ bool twResetBus()
     TWCR |= _BV(TWEN);
     return (PINC & _BV(DATA)) != 0 && ((PINC & _BV(CLOCK)) != 0);
 }
+
+void twStart()
+{
+    if (!twResetBus())
+    {
+        Uart::print("\r\nBUS BLOCKED\r\n");
+        return;
+    }
+    TWCR |= _BV(TWINT) | _BV(TWEA) | _BV(TWSTA);
+}
+
+void sendMotorData(uint8_t motor, Command cmd, uint32_t data)
+{
+    gTwBuffer[0] = (motor < 3) ? TW_RIGHT_ADDR : TW_LEFT_ADDR;
+    gTwBuffer[1] = static_cast<uint8_t>(cmd);
+    gTwBuffer[2] = (motor < 3) ? motor : motor - 3;
+    gTwBuffer[3] = data;
+    gTwBuffer[4] = data >> 8;
+    gTwBuffer[5] = data >> 16;
+    gTwBuffer[6] = data >> 24;
+    gTwRxLen = 0;
+    gTwTxLen = 7;
+    twStart();
+}
+
+void receiveMotorData(uint8_t motor, Command cmd)
+{
+    gTwBuffer[0] = (motor < 3) ? TW_RIGHT_ADDR : TW_LEFT_ADDR;
+    gTwBuffer[1] = static_cast<uint8_t>(cmd);
+    gTwBuffer[2] = (motor < 3) ? motor : motor - 3;
+    gTwRxLen = 4;
+    gTwTxLen = 3;
+    twStart();
+}
+
 
 ISR(TWI_vect)
 {
@@ -148,6 +184,17 @@ ISR(TWI_vect)
     }
 }
 
+ISR(TIMER2_COMPA_vect)
+{
+    static uint16_t ms = 0;
+    ++ms;
+    if ((ms % 100) == 0)
+    {
+        gRequestedMotorPos = 0;
+        receiveMotorData(gRequestedMotorPos, Command::GetPosition);
+    }
+}
+
 void init()
 {
     // POWER_ONOFF + BOARD_POWER
@@ -161,47 +208,23 @@ void init()
     TWCR = _BV(TWEA) | _BV(TWEN) | _BV(TWIE);  // Enable I2C, acknowledge and interrupts
     TWSR = 0; // prescaler = 1
 
+    /* TIMER2: Clear on compare match
+     * Mode 2: CTC, TOP = OCRA
+     * CLK I/O /8 prescaling
+     */
+    TCCR2A = _BV(WGM21);
+    TCCR2B = _BV(CS22) | _BV(CS21) | _BV(CS20);
+    TIMSK2 = _BV(OCIE2A);
+    OCR2A = 9;  // fclk / (2 * prescaler * freq) - 1 = 20MHz / (2 * 1024 * 1kHz) - 1 = 9
+
 
     sei();
 }
 
-void twStart()
-{
-    if (!twResetBus())
-    {
-        Uart::print("\r\nBUS BLOCKED\r\n");
-        return;
-    }
-    TWCR |= _BV(TWINT) | _BV(TWEA) | _BV(TWSTA);
-}
-
-void sendMotorData(uint8_t motor, Command cmd, uint32_t data)
-{
-    gTwBuffer[0] = (motor < 3) ? TW_RIGHT_ADDR : TW_LEFT_ADDR;
-    gTwBuffer[1] = static_cast<uint8_t>(cmd);
-    gTwBuffer[2] = (motor < 3) ? motor : motor - 3;
-    gTwBuffer[3] = data;
-    gTwBuffer[4] = data >> 8;
-    gTwBuffer[5] = data >> 16;
-    gTwBuffer[6] = data >> 24;
-    gTwRxLen = 0;
-    gTwTxLen = 7;
-    twStart();
-}
-
-void receiveMotorData(uint8_t motor, Command cmd)
-{
-    gTwBuffer[0] = (motor < 3) ? TW_RIGHT_ADDR : TW_LEFT_ADDR;
-    gTwBuffer[1] = static_cast<uint8_t>(cmd);
-    gTwBuffer[2] = (motor < 3) ? motor : motor - 3;
-    gTwRxLen = 4;
-    gTwTxLen = 3;
-    twStart();
-}
 
 void printMotorUsage()
 {
-    Uart::print("m[1-6][sp%b]{PARAM}");
+    Uart::print("m[1-6][sp%be]{PARAM}");
 }
 
 void cmdMotor(const char* line, uint8_t len)
@@ -215,6 +238,12 @@ void cmdMotor(const char* line, uint8_t len)
     Command cmd = Command::GetPosition;
     if (len >= 3)
     {
+        uint32_t param = 0;
+        for (uint8_t i = 3; i < len; ++i)
+        {
+            param *= 10;
+            param += line[i] - '0';
+        }
         switch (line[2])
         {
         case 's':
@@ -224,17 +253,15 @@ void cmdMotor(const char* line, uint8_t len)
             cmd = Command::SetPosition;
             break;
         case '%':
+            param = param * 255 / 100;
             cmd = Command::SetPwm;
             break;
         case 'b':
             cmd = Command::Stop;
             break;
-        }
-        uint32_t param = 0;
-        for (uint8_t i = 3; i < len; ++i)
-        {
-            param *= 10;
-            param += line[i] - '0';
+        case 'e':
+            cmd = Command::PwmOnStandby;
+            break;
         }
         sendMotorData(motor, cmd, param);
     }
@@ -327,13 +354,31 @@ void work()
     }
     if (gTwReady)
     {
-        Uart::print("\r\ni2c:");
-        for (uint8_t i = 0; i < gTwRxLen; ++i)
+        if (gRequestedMotorPos >= 0)
         {
+            Uart::printValue(*(volatile uint32_t*)gTwBuffer);
             Uart::printChar(' ');
-            Uart::printValue(gTwBuffer[i]);
+            ++gRequestedMotorPos;
+            if (gRequestedMotorPos < 6)
+            {
+                receiveMotorData(gRequestedMotorPos, Command::GetPosition);
+            }
+            else
+            {
+                gRequestedMotorPos = -1;
+                Uart::print("\r");
+            }
         }
-        printPrompt();
+        else
+        {
+            Uart::print("\r\ni2c:");
+            for (uint8_t i = 0; i < gTwRxLen; ++i)
+            {
+                Uart::printChar(' ');
+                Uart::printValueHex(gTwBuffer[i]);
+            }
+            printPrompt();
+        }
         gTwReady = false;
     }
 }

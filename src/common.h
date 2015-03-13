@@ -17,6 +17,7 @@ enum class Command : uint8_t
     SetSpeed,
     SetPosition,
     Stop,
+    PwmOnStandby,
     GetPosition,
 };
 

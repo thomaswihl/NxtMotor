@@ -45,7 +45,7 @@
  * ADC7                                     VBAT 1k2 -> MEAS -> 1k2 -> GND
  */
 
-#define TW_BUFFER_SIZE 6    // I2C buffer size = 1 (address) + 1 (Command) + 4 (data)
+#define TW_BUFFER_SIZE 16    // I2C buffer size = 1 (address) + 1 (Command) + 4 (data)
 
 volatile uint8_t gTwBuffer[TW_BUFFER_SIZE];
 volatile uint8_t gTwTxLen = 0;
@@ -72,13 +72,23 @@ struct Encoder
     encoder_t encoderPos;
 };
 
+enum class TargetType : uint8_t
+{
+    Pwm,
+    Speed,
+    Position,
+};
+
+
 struct Motor
 {
     uint8_t encoder;
-    encoder_t targetPos;
+    TargetType targetType;
+    uint32_t target;
     controller_t integralError;
     controller_t previousError;
     controller_t y;
+    bool pwmOnStandby;
 };
 
 
@@ -87,7 +97,7 @@ static const unsigned MOTOR_COUNT = 3;
 static const unsigned ENCODER_COUNT = 3;
 
 
-static volatile uint16_t gMs = 0;
+static volatile uint32_t gMs = 0;
 
 volatile static Motor gMotor[MOTOR_COUNT] = {0};
 volatile static Encoder gEncoder[ENCODER_COUNT] = {0};
@@ -102,7 +112,7 @@ void setPortBit(uint8_t offset, uint8_t port, bool on)
 //    Uart::printValue(bit);
 //    Uart::printChar(' ');
     if (on) _SFR_IO8(offset) |= _BV(bit);
-    else _SFR_IO8(offset) &= _BV(bit);
+    else _SFR_IO8(offset) &= ~_BV(bit);
 }
 
 inline void setPin(uint8_t port, bool on)
@@ -144,12 +154,30 @@ void setSpeed(uint8_t motorIndex, int16_t speed)
 //    Uart::print("\r\n");
     if (cw)
     {
-        _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = speed;
+        if (gMotor[motorIndex].pwmOnStandby)
+        {
+            _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = PWM_MAX;
+            _SFR_MEM8(ADDR[motorIndex][PWM_Enable]) = speed;
+        }
+        else
+        {
+            _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = speed;
+            _SFR_MEM8(ADDR[motorIndex][PWM_Enable]) = PWM_MAX;
+        }
         setPin(ADDR[motorIndex][In2], false);
     }
     else
     {
-        _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = PWM_MAX - speed;
+        if (gMotor[motorIndex].pwmOnStandby)
+        {
+            _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = PWM_MAX;
+            _SFR_MEM8(ADDR[motorIndex][PWM_Enable]) = PWM_MAX - speed;
+        }
+        else
+        {
+            _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = PWM_MAX - speed;
+            _SFR_MEM8(ADDR[motorIndex][PWM_Enable]) = PWM_MAX;
+        }
         setPin(ADDR[motorIndex][In2], true);
     }
 //    Uart::printValueHex(OCR2A);
@@ -159,38 +187,59 @@ void setSpeed(uint8_t motorIndex, int16_t speed)
 }
 
 
+void controllerPosition(uint8_t i)
+{
+    static const int16_t kp = 8, kiShift = 4, kd = 0;
+    static const int16_t I_MAX = PWM_MAX >> 2;
+    controller_t error = gMotor[i].target - gEncoder[gMotor[i].encoder].encoderPos;
+    if (error == 0)
+    {
+        gMotor[i].integralError = 0;
+    }
+    else
+    {
+        gMotor[i].integralError += error;
+        if (gMotor[i].integralError > I_MAX) gMotor[i].integralError = I_MAX;
+        else if (gMotor[i].integralError < -I_MAX) gMotor[i].integralError = -I_MAX;
+    }
+    controller_t y = kp * error + (gMotor[i].integralError << kiShift) + kd * (error - gMotor[i].previousError);
+    gMotor[i].previousError = error;
+
+    gMotor[i].y = y;
+    setSpeed(i, y >> 4);
+}
+
+void controllerSpeed(uint8_t i)
+{
+}
+
+
 ISR(TIMER0_OVF_vect)
 {
+    sei();
+
+    ++gMs;
+    if ((gMs & 63ULL) != 0) return;
+
+    for (int i = 0; i < MOTOR_COUNT; ++i)
+    {
+        switch (gMotor[i].targetType)
+        {
+        case TargetType::Position:
+            controllerPosition(i);
+            break;
+        case TargetType::Speed:
+            controllerSpeed(i);
+            break;
+        case TargetType::Pwm:
+            setSpeed(i, gMotor[i].target);
+            break;
+        }
+    }
 }
 
 ISR(TIMER1_OVF_vect)
 {
-//    static const int16_t kp = 32, kiShift = 2, kd = 32;
-//    static const int16_t I_MAX = PWM_MAX >> 2;
-//    sei();
-
-//    ++gMs;
-//    if ((gMs & 1023) != 0) return;
-
-//    for (int i = 0; i < MOTOR_COUNT; ++i)
-//    {
-//        controller_t error = gMotor[i].targetPos - gEncoder[gMotor[i].encoder].encoderPos;
-//        if (error == 0)
-//        {
-//            gMotor[i].integralError = 0;
-//        }
-//        else
-//        {
-//            gMotor[i].integralError += error;
-//            if (gMotor[i].integralError > I_MAX) gMotor[i].integralError = I_MAX;
-//            else if (gMotor[i].integralError < -I_MAX) gMotor[i].integralError = -I_MAX;
-//        }
-//        controller_t y = kp * error + (gMotor[i].integralError << kiShift) + kd * (error - gMotor[i].previousError);
-//        gMotor[i].previousError = error;
-
-//        gMotor[i].y = y;
-//        setSpeed(i, y >> 4);
-//    }
 }
 
 ISR(TIMER2_OVF_vect)
@@ -218,8 +267,10 @@ void evalEncoders()
         1,  // 11 -> 10 cw
         0,  // 11 -> 11 no change
     };
+    uint8_t pd = PIND & 0x3;
+    uint8_t pc = PINC & 0xf;
     sei();
-    uint8_t now = (PINC & 0x0f) | ((PIND & 3) << 4);
+    uint8_t now = (pc >> 3) | ((pc & 4) >> 1) | ((pc & 3) << 2) | (pd << 4);
     uint8_t shift = 0;
     for (uint8_t i = 0; i < ENCODER_COUNT; ++i)
     {
@@ -257,12 +308,23 @@ void executeCommand()
     switch (static_cast<Command>(gTwBuffer[0]))
     {
     case Command::SetPwm:
-        setSpeed(gTwBuffer[1], (uint16_t)gTwBuffer[2] | (uint16_t)(gTwBuffer[3] << 8));
+        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[gTwBuffer[1]].targetType = TargetType::Pwm;
         break;
     case Command::SetSpeed:
+        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[gTwBuffer[1]].targetType = TargetType::Speed;
+        break;
     case Command::SetPosition:
+        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[gTwBuffer[1]].targetType = TargetType::Position;
+        break;
     case Command::Stop:
-        setSpeed(gTwBuffer[1], 0);
+        gMotor[gTwBuffer[1]].targetType = TargetType::Pwm;
+        gMotor[gTwBuffer[1]].target = 0;
+        break;
+    case Command::PwmOnStandby:
+        gMotor[gTwBuffer[1]].pwmOnStandby = gTwBuffer[2] != 0;
         break;
     case Command::GetPosition:
         *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[gTwBuffer[1]].encoderPos;
@@ -326,7 +388,7 @@ void init()
 #endif
     TWCR = _BV(TWEA) | _BV(TWEN) | _BV(TWIE);
 
-    PCICR = (1 << PCIE1);
+    PCICR = _BV(PCIE1) | _BV(PCIE2);
     // Enable pin change irq's for rotery encoders
     PCMSK0 = 0;
     PCMSK1 = _BV(PCINT8) | _BV(PCINT9) | _BV(PCINT10) | _BV(PCINT11);
@@ -334,74 +396,51 @@ void init()
 
     /* TIMER0: Clear on compare match
      * Mode 1: PWM, Phase Correct, Top = 0xff, Update of OCRA at top, TOV at bottom
-     * CLK I/O /8 prescaling
+     * CLK I/O /no prescaling -> 39kHz
      */
-    TCCR0A = (1 << COM0A1) | (1 << COM0B1) | (1 << WGM00);
-    TCCR0B = (1 << CS01);
-    TIMSK0 = (1 << TOIE0);
+    TCCR0A = _BV(COM0A1) | _BV(COM0B1) | _BV(WGM00);
+    TCCR0B = _BV(CS00);
+    TIMSK0 = _BV(TOIE0);
 
     /* TIMER1: Clear on compare match
      * Mode 8: PWM, Phase and Frequence Correct, Top = ICR1
-     * CLK I/O no prescaler
+     * CLK I/O no prescaler -> 39kHz
      */
-    TCCR1A = (1 << COM1A1) | (1 << COM1B1);
-    TCCR1B = (1 << WGM13) | (1 << CS10);
-    TIMSK1 = (1 << TOIE1);
+    TCCR1A = _BV(COM1A1) | _BV(COM1B1);
+    TCCR1B = _BV(WGM13) | _BV(CS10);
+    TIMSK1 = 0;//_BV(TOIE1);
     ICR1 = PWM_MAX;
 
     /* TIMER2: Clear on compare match
      * Mode 1: PWM, Phase Correct, Top = 0xff, Update of OCRA at top, TOV at bottom
-     * CLK I/O /8 prescaling
+     * CLK I/O /no prescaling -> 39kHz
      */
-    TCCR2A = (1 << COM2A1) | (1 << COM2B1) | (1 << WGM20);
-    TCCR2B = (1 << CS20);
-    TIMSK2 = (1 << TOIE2);
+    TCCR2A = _BV(COM2A1) | _BV(COM2B1) | _BV(WGM20);
+    TCCR2B = _BV(CS20);
+    TIMSK2 = 0;//_BV(TOIE2);
 
     evalEncoders();
-    for (int8_t i = MOTOR_COUNT - 1; i >= 0; --i)
-    {
-        gMotor[i].encoder = i;
-    }
 
     //Uart::init();
     //Uart::print("\r\n");
-
-
-    sei();
 
     for (int i = 0; i < MOTOR_COUNT; ++i)
     {
         setPort(ADDR[i][In1], Output);
         setPort(ADDR[i][In2], Output);
-        setPin(ADDR[i][In2], true);
+        setPin(ADDR[i][In2], false);
         setPort(ADDR[i][Enable], Output);
-        _SFR_MEM8(ADDR[i][PWM_In1]) = PWM_MAX;
-        _SFR_MEM8(ADDR[i][PWM_Enable]) = PWM_MAX;
+        setPort(ADDR[i][EncoderA], PullUp);
+        setPort(ADDR[i][EncoderB], PullUp);
+        _SFR_MEM8(ADDR[i][PWM_In1]) = 0;
+        _SFR_MEM8(ADDR[i][PWM_Enable]) = 0;
+
+        gMotor[i].encoder = i;
+        gEncoder[i].encoderError = 0;
+        gEncoder[i].encoderPos = 0;
     }
-    //Uart::print("\r\n");
-//    Uart::printValueHex(PORTB);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(DDRB);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(PORTC);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(DDRC);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(PORTD);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(DDRD);
-    //    Uart::printValueHex(TCNT0);
-    //    Uart::printChar(' ');
-    //    Uart::printValueHex(TCNT1);
-    //    Uart::printChar(' ');
-    //    Uart::printValueHex(TCNT2);
-    //    Uart::printChar(' ');
-    //    Uart::printValueHex(TCNT0);
-    //    Uart::printChar(' ');
-    //    Uart::printValueHex(TCNT1);
-    //    Uart::printChar(' ');
-    //    Uart::printValueHex(TCNT2);
-    //    Uart::print("\r\n");
+
+    sei();
 
 }
 
