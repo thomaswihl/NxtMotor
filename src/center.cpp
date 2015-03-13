@@ -188,7 +188,7 @@ ISR(TIMER2_COMPA_vect)
 {
     static uint16_t ms = 0;
     ++ms;
-    if ((ms % 100) == 0)
+    if ((ms % 1000) == 0)
     {
         gRequestedMotorPos = 0;
         receiveMotorData(gRequestedMotorPos, Command::GetPosition);

@@ -211,6 +211,13 @@ void controllerPosition(uint8_t i)
 
 void controllerSpeed(uint8_t i)
 {
+    int32_t speed = gEncoder[gMotor[i].encoder].encoderPos - (uint32_t)gMotor[i].previousError;
+    gMotor[i].previousError = gEncoder[gMotor[i].encoder].encoderPos;
+
+    int32_t error = (int32_t)gMotor[i].target - speed;
+    gMotor[i].y += error << 4;
+    setSpeed(i, gMotor[i].y);
+
 }
 
 
