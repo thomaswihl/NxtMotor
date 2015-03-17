@@ -191,7 +191,9 @@ void controllerPosition(uint8_t i)
 {
     static const int16_t kp = 8, kiShift = 4, kd = 0;
     static const int16_t I_MAX = PWM_MAX >> 2;
+    cli();
     controller_t error = gMotor[i].target - gEncoder[gMotor[i].encoder].encoderPos;
+    sei();
     if (error == 0)
     {
         gMotor[i].integralError = 0;
@@ -211,6 +213,10 @@ void controllerPosition(uint8_t i)
 
 void controllerSpeed(uint8_t i)
 {
+    static uint8_t counter = 0;
+    ++counter;
+    if (counter != 10) return;
+    counter = 0;
     int32_t speed = gEncoder[gMotor[i].encoder].encoderPos - (uint32_t)gMotor[i].previousError;
     gMotor[i].previousError = gEncoder[gMotor[i].encoder].encoderPos;
 
@@ -218,6 +224,14 @@ void controllerSpeed(uint8_t i)
     gMotor[i].y += error << 4;
     setSpeed(i, gMotor[i].y);
 
+//    gMotor[i].previousError += (int32_t)gMotor[i].target;
+//    cli();
+//    int32_t error = gEncoder[gMotor[i].encoder].encoderPos - (uint32_t)gMotor[i].previousError;
+//    sei();
+//    gMotor[i].y -= error;
+//    if (gMotor[i].y > 255) gMotor[i].y = 255;
+//    else if (gMotor[i].y < -255) gMotor[i].y = -255;
+//    setSpeed(i, gMotor[i].y);
 }
 
 
@@ -239,7 +253,8 @@ ISR(TIMER0_OVF_vect)
             controllerSpeed(i);
             break;
         case TargetType::Pwm:
-            setSpeed(i, gMotor[i].target);
+            int16_t speed = *((int16_t*)&gMotor[i].target);
+            setSpeed(i, speed);
             break;
         }
     }
@@ -276,7 +291,7 @@ void evalEncoders()
     };
     uint8_t pd = PIND & 0x3;
     uint8_t pc = PINC & 0xf;
-    sei();
+    //sei();
     uint8_t now = (pc >> 3) | ((pc & 4) >> 1) | ((pc & 3) << 2) | (pd << 4);
     uint8_t shift = 0;
     for (uint8_t i = 0; i < ENCODER_COUNT; ++i)
@@ -321,6 +336,7 @@ void executeCommand()
     case Command::SetSpeed:
         gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
         gMotor[gTwBuffer[1]].targetType = TargetType::Speed;
+        gMotor[gTwBuffer[1]].previousError = gEncoder[gMotor[gTwBuffer[1]].encoder].encoderPos;
         break;
     case Command::SetPosition:
         gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
@@ -334,7 +350,12 @@ void executeCommand()
         gMotor[gTwBuffer[1]].pwmOnStandby = gTwBuffer[2] != 0;
         break;
     case Command::GetPosition:
+        cli();
         *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[gTwBuffer[1]].encoderPos;
+//        if (gTwBuffer[1] == 0) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[0].encoderPos;
+//        if (gTwBuffer[1] == 1) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].previousError;
+//        if (gTwBuffer[1] == 2) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].y;
+        sei();
         gTwTxLen = 4;
         break;
     }

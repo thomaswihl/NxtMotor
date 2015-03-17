@@ -190,8 +190,8 @@ ISR(TIMER2_COMPA_vect)
     ++ms;
     if ((ms % 1000) == 0)
     {
-        gRequestedMotorPos = 0;
-        receiveMotorData(gRequestedMotorPos, Command::GetPosition);
+//        gRequestedMotorPos = 0;
+//        receiveMotorData(gRequestedMotorPos, Command::GetPosition);
     }
 }
 
@@ -219,6 +219,8 @@ void init()
 
 
     sei();
+    Uart::print("\r\nREADY.");
+    printPrompt();
 }
 
 
@@ -238,12 +240,20 @@ void cmdMotor(const char* line, uint8_t len)
     Command cmd = Command::GetPosition;
     if (len >= 3)
     {
+        uint8_t i = 3;
+        bool negative = false;
+        if (line[i] == '-')
+        {
+            negative = true;
+            ++i;
+        }
         uint32_t param = 0;
-        for (uint8_t i = 3; i < len; ++i)
+        for (; i < len; ++i)
         {
             param *= 10;
             param += line[i] - '0';
         }
+        if (negative) param = (uint32_t)(-(int32_t)param);
         switch (line[2])
         {
         case 's':
@@ -253,7 +263,7 @@ void cmdMotor(const char* line, uint8_t len)
             cmd = Command::SetPosition;
             break;
         case '%':
-            param = param * 255 / 100;
+            param = static_cast<int32_t>(param) * 255 / 100;
             cmd = Command::SetPwm;
             break;
         case 'b':
@@ -354,22 +364,22 @@ void work()
     }
     if (gTwReady)
     {
-        if (gRequestedMotorPos >= 0)
-        {
-            Uart::printValue(*(volatile uint32_t*)gTwBuffer);
-            Uart::printChar(' ');
-            ++gRequestedMotorPos;
-            if (gRequestedMotorPos < 6)
-            {
-                receiveMotorData(gRequestedMotorPos, Command::GetPosition);
-            }
-            else
-            {
-                gRequestedMotorPos = -1;
-                Uart::print("\r");
-            }
-        }
-        else
+//        if (gRequestedMotorPos >= 0)
+//        {
+//            Uart::printValue(*(volatile uint32_t*)gTwBuffer);
+//            Uart::printChar(' ');
+//            ++gRequestedMotorPos;
+//            if (gRequestedMotorPos < 6)
+//            {
+//                receiveMotorData(gRequestedMotorPos, Command::GetPosition);
+//            }
+//            else
+//            {
+//                gRequestedMotorPos = -1;
+//                Uart::print("\r\n");
+//            }
+//        }
+//        else
         {
             Uart::print("\r\ni2c:");
             for (uint8_t i = 0; i < gTwRxLen; ++i)
