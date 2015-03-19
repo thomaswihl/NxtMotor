@@ -22,6 +22,7 @@ ISR(USART_RX_vect)
         gRxBuffer[gRxLen++] = data;
         printChar(data);
         if (data == 27) gLineReady = true;
+
     }
     else
     {
@@ -101,5 +102,11 @@ void clearLine()
     gRxLen = 0;
     gLineReady = false;
 }
+
+bool transmitBufferEmpty()
+{
+    return gTxReadOffset == gTxWriteOffset;
+}
+
 
 }   /* namespace Uart */

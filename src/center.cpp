@@ -184,12 +184,33 @@ ISR(TWI_vect)
     }
 }
 
+ISR(ADC_vect)
+{
+    uint32_t value = ADCL | (ADCH << 8);
+    value *= 12;
+    ADCSRA &= ~(_BV(ADEN) | _BV(ADSC));
+//    Uart::printChar('\r');
+//    Uart::printValue(value / 1000);
+//    Uart::printChar('.');
+//    Uart::printValue(value % 1000);
+//    printPrompt();
+    /* Power off */
+    if (value < 9000)
+    {
+        sei();
+        Uart::print("\r\nLOW BATT\r\n");
+        while (!Uart::transmitBufferEmpty()) { }
+        //PORTD = 0;
+    }
+}
+
 ISR(TIMER2_COMPA_vect)
 {
     static uint16_t ms = 0;
     ++ms;
     if ((ms % 1000) == 0)
     {
+        ADCSRA |= _BV(ADEN) | _BV(ADSC);
 //        gRequestedMotorPos = 0;
 //        receiveMotorData(gRequestedMotorPos, Command::GetPosition);
     }
@@ -217,6 +238,9 @@ void init()
     TIMSK2 = _BV(OCIE2A);
     OCR2A = 9;  // fclk / (2 * prescaler * freq) - 1 = 20MHz / (2 * 1024 * 1kHz) - 1 = 9
 
+    /* ADC */
+    ADMUX = _BV(REFS0) | 7;    // AVCC at AREF, channel 7
+    ADCSRA = _BV(ADEN) | _BV(ADIE) | 7;     // Enable, interrupt enable, prescaler = 128 -> 156250Hz
 
     sei();
     Uart::print("\r\nREADY.");

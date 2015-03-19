@@ -46,5 +46,7 @@ bool lineReady();
 const char* getLine(uint8_t& len);
 void clearLine();
 
+bool transmitBufferEmpty();
+
 }
 #endif // UART_H

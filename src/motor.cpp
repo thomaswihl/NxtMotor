@@ -214,24 +214,29 @@ void controllerPosition(uint8_t i)
 void controllerSpeed(uint8_t i)
 {
     static uint8_t counter = 0;
+    static const int16_t kp = 8, kiShift = 4;
+    static const int16_t I_MAX = PWM_MAX >> 2;
     ++counter;
     if (counter != 10) return;
     counter = 0;
-    int32_t speed = gEncoder[gMotor[i].encoder].encoderPos - (uint32_t)gMotor[i].previousError;
-    gMotor[i].previousError = gEncoder[gMotor[i].encoder].encoderPos;
 
-    int32_t error = (int32_t)gMotor[i].target - speed;
-    gMotor[i].y += error << 4;
-    setSpeed(i, gMotor[i].y);
-
-//    gMotor[i].previousError += (int32_t)gMotor[i].target;
-//    cli();
-//    int32_t error = gEncoder[gMotor[i].encoder].encoderPos - (uint32_t)gMotor[i].previousError;
-//    sei();
-//    gMotor[i].y -= error;
-//    if (gMotor[i].y > 255) gMotor[i].y = 255;
-//    else if (gMotor[i].y < -255) gMotor[i].y = -255;
-//    setSpeed(i, gMotor[i].y);
+    gMotor[i].previousError += (int32_t)gMotor[i].target;
+    cli();
+    int32_t error = (uint32_t)gMotor[i].previousError - gEncoder[gMotor[i].encoder].encoderPos;
+    sei();
+    if (error == 0)
+    {
+        gMotor[i].integralError = 0;
+    }
+    else
+    {
+        gMotor[i].integralError += error;
+        if (gMotor[i].integralError > I_MAX) gMotor[i].integralError = I_MAX;
+        else if (gMotor[i].integralError < -I_MAX) gMotor[i].integralError = -I_MAX;
+    }
+    controller_t y = kp * error + (gMotor[i].integralError << kiShift);
+    gMotor[i].y = y;
+    setSpeed(i, y >> 5);
 }
 
 
@@ -327,34 +332,40 @@ void executeCommand()
 {
     gTwTxLen = 0;
     if (gTwRxLen == 0) return;
+#if defined(RIGHT)
+    uint8_t idx = gTwBuffer[1];
+#elif defined(LEFT)
+    uint8_t idx = 2 - gTwBuffer[1];
+#endif
     switch (static_cast<Command>(gTwBuffer[0]))
     {
     case Command::SetPwm:
-        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
-        gMotor[gTwBuffer[1]].targetType = TargetType::Pwm;
+        gMotor[idx].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[idx].targetType = TargetType::Pwm;
         break;
     case Command::SetSpeed:
-        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
-        gMotor[gTwBuffer[1]].targetType = TargetType::Speed;
-        gMotor[gTwBuffer[1]].previousError = gEncoder[gMotor[gTwBuffer[1]].encoder].encoderPos;
+        gMotor[idx].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[idx].targetType = TargetType::Speed;
+        gMotor[idx].previousError = gEncoder[gMotor[idx].encoder].encoderPos;
+        gMotor[idx].y = 0;
         break;
     case Command::SetPosition:
-        gMotor[gTwBuffer[1]].target = *((volatile uint32_t*)(gTwBuffer + 2));
-        gMotor[gTwBuffer[1]].targetType = TargetType::Position;
+        gMotor[idx].target = *((volatile uint32_t*)(gTwBuffer + 2));
+        gMotor[idx].targetType = TargetType::Position;
         break;
     case Command::Stop:
-        gMotor[gTwBuffer[1]].targetType = TargetType::Pwm;
-        gMotor[gTwBuffer[1]].target = 0;
+        gMotor[idx].targetType = TargetType::Pwm;
+        gMotor[idx].target = 0;
         break;
     case Command::PwmOnStandby:
-        gMotor[gTwBuffer[1]].pwmOnStandby = gTwBuffer[2] != 0;
+        gMotor[idx].pwmOnStandby = gTwBuffer[2] != 0;
         break;
     case Command::GetPosition:
         cli();
-        *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[gTwBuffer[1]].encoderPos;
-//        if (gTwBuffer[1] == 0) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[0].encoderPos;
-//        if (gTwBuffer[1] == 1) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].previousError;
-//        if (gTwBuffer[1] == 2) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].y;
+        *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[idx].encoderPos;
+//        if (idx == 0) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[0].encoderPos;
+//        if (idx == 1) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].previousError;
+//        if (idx == 2) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].y;
         sei();
         gTwTxLen = 4;
         break;
