@@ -1,13 +1,13 @@
 #if defined(LEFT) || defined(RIGHT)
 
 #include <avr/io.h>
+#include <avr/sleep.h>
 #include <avr/interrupt.h>
 //#include <util/atomic.h>
 #include <stdint.h>
 #include <limits.h>
 
 #include "common.h"
-//#include "uart.h"
 
 // /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude -C/home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude.conf -patmega328p -P/dev/ttyUSB0 -carduino -b57600 -D -Uflash:w:build-cli/NxtMotor.hex
 // /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude -v -C /home/thomas/bin/arduino-1.0.6/hardware/tools/avrdude.conf -c avrispmkII -p m328p -P usb
@@ -45,11 +45,26 @@
  * ADC7                                     VBAT 1k2 -> MEAS -> 1k2 -> GND
  */
 
+//#define DBG_UART 1
+#ifdef DBG_UART
+#include "uart.h"
+#define DBG(x) Uart::print(x)
+#define DBGV(x) Uart::printValue(x)
+#define DBGH(x) Uart::printValueHex(x)
+#else
+#define DBG(x) { }
+#define DBGV(x) { }
+#define DBGH(x) { }
+#endif
+
+#define STANDBY_TIME_IN_COUNTS 40000    /* at approx 40kHz this should be 1s */
+
 #define TW_BUFFER_SIZE 16    // I2C buffer size = 1 (address) + 1 (Command) + 4 (data)
 
 volatile uint8_t gTwBuffer[TW_BUFFER_SIZE];
 volatile uint8_t gTwTxLen = 0;
 volatile uint8_t gTwRxLen = 0;
+volatile bool gTwBusy = false;
 
 
 enum MotorFunction { In1, In2, Enable, EncoderA, EncoderB, PWM_In1, PWM_Enable };
@@ -89,6 +104,8 @@ struct Motor
     controller_t previousError;
     controller_t y;
     bool pwmOnStandby;
+    bool inStandby;
+    uint32_t inactiveSince;
 };
 
 
@@ -97,7 +114,7 @@ static const unsigned MOTOR_COUNT = 3;
 static const unsigned ENCODER_COUNT = 3;
 
 
-static volatile uint32_t gMs = 0;
+static volatile uint32_t gIrqCounter = 0;
 
 volatile static Motor gMotor[MOTOR_COUNT] = {0};
 volatile static Encoder gEncoder[ENCODER_COUNT] = {0};
@@ -146,12 +163,34 @@ void setSpeed(uint8_t motorIndex, int16_t speed)
         speed = -speed;
     }
     if (speed > PWM_MAX) speed = PWM_MAX;
-//    Uart::printValueHex(ADDR[motorIndex][PWM_In1]);
-//    Uart::printChar(':');
-//    Uart::printValueHex(OCR2A);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(OCR1B);
-//    Uart::print("\r\n");
+    if (speed == 0)
+    {
+        if (gMotor[motorIndex].inactiveSince == 0)
+        {
+            gMotor[motorIndex].inactiveSince = gIrqCounter;
+            DBGV(motorIndex);
+            DBG(" Inavtive since ");
+            DBGV(gMotor[motorIndex].inactiveSince);
+            DBG("\r\n");
+        }
+        else
+        {
+            if (gIrqCounter - gMotor[motorIndex].inactiveSince > STANDBY_TIME_IN_COUNTS && !gMotor[motorIndex].inStandby)
+            {
+                DBGV(motorIndex);
+                DBG(" Standby\r\n");
+                _SFR_MEM8(ADDR[motorIndex][PWM_In1]) = 0;
+                _SFR_MEM8(ADDR[motorIndex][PWM_Enable]) = 0;
+                gMotor[motorIndex].inStandby = true;
+            }
+            return;
+        }
+    }
+    else
+    {
+        gMotor[motorIndex].inactiveSince = 0;
+        gMotor[motorIndex].inStandby = false;
+    }
     if (cw)
     {
         if (gMotor[motorIndex].pwmOnStandby)
@@ -180,10 +219,6 @@ void setSpeed(uint8_t motorIndex, int16_t speed)
         }
         setPin(ADDR[motorIndex][In2], true);
     }
-//    Uart::printValueHex(OCR2A);
-//    Uart::printChar(' ');
-//    Uart::printValueHex(OCR1B);
-//    Uart::print("\r\n");
 }
 
 
@@ -244,8 +279,8 @@ ISR(TIMER0_OVF_vect)
 {
     sei();
 
-    ++gMs;
-    if ((gMs & 63ULL) != 0) return;
+    ++gIrqCounter;
+    if ((gIrqCounter & 63ULL) != 0) return;
 
     for (int i = 0; i < MOTOR_COUNT; ++i)
     {
@@ -337,6 +372,8 @@ void executeCommand()
 #elif defined(LEFT)
     uint8_t idx = 2 - gTwBuffer[1];
 #endif
+    //DBGV(gTwBuffer[0]);
+    gMotor[idx].inStandby = false;
     switch (static_cast<Command>(gTwBuffer[0]))
     {
     case Command::SetPwm:
@@ -363,10 +400,12 @@ void executeCommand()
     case Command::GetPosition:
         cli();
         *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[idx].encoderPos;
+        sei();
+        DBGH(idx);
+        DBG(":");
 //        if (idx == 0) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gEncoder[0].encoderPos;
 //        if (idx == 1) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].previousError;
 //        if (idx == 2) *reinterpret_cast<volatile uint32_t*>(gTwBuffer) = gMotor[0].y;
-        sei();
         gTwTxLen = 4;
         break;
     }
@@ -376,13 +415,13 @@ ISR(TWI_vect)
 {
     static uint8_t offset = 0;
 
-//    Uart::printValueHex(TWSR);
-//    Uart::print(" ");
+    //DBGH(TWSR);
 
     switch (TWSR & 0xf8)
     {
     case 0xa8:  // SLA+R received
     case 0xb0:  // Arbitration lost, SLA+R received
+        gTwBusy = true;
         offset = 0;
         // Fall through
     case 0xb8:  // data transmitted + ACK
@@ -397,6 +436,7 @@ ISR(TWI_vect)
     case 0x68:  // Arbitration lost, SLA+W received
     case 0x70:  // General call received
     case 0x78:  // Arbitration lost, General call received
+        gTwBusy = true;
         gTwRxLen = 0;
         break;
     case 0x80:  // Data received + ACK
@@ -407,11 +447,16 @@ ISR(TWI_vect)
         break;
     case 0xa0:  // STOP or REPEATED START
         executeCommand();
+        gTwBusy = false;
         break;
     case 0xc0:  // data transmitted + NACK
     case 0xc8:  // last data transmitted + ACK
         // We are done
         TWCR |= _BV(TWEA);
+        gTwBusy = false;
+        break;
+    default:
+        DBGH(TWSR);
         break;
     }
     TWCR |= _BV(TWINT);
@@ -431,7 +476,9 @@ void init()
     // Enable pin change irq's for rotery encoders
     PCMSK0 = 0;
     PCMSK1 = _BV(PCINT8) | _BV(PCINT9) | _BV(PCINT10) | _BV(PCINT11);
+#ifndef DBG_UART
     PCMSK2 = _BV(PCINT16) | _BV(PCINT17);
+#endif
 
     /* TIMER0: Clear on compare match
      * Mode 1: PWM, Phase Correct, Top = 0xff, Update of OCRA at top, TOV at bottom
@@ -460,8 +507,9 @@ void init()
 
     evalEncoders();
 
-    //Uart::init();
-    //Uart::print("\r\n");
+#ifdef DBG_UART
+    Uart::init();
+#endif
 
     for (int i = 0; i < MOTOR_COUNT; ++i)
     {
@@ -475,17 +523,47 @@ void init()
         _SFR_MEM8(ADDR[i][PWM_Enable]) = 0;
 
         gMotor[i].encoder = i;
+        gMotor[i].targetType = TargetType::Pwm;
+        gMotor[i].target = 0;
+        gMotor[i].pwmOnStandby = false;
+
         gEncoder[i].encoderError = 0;
         gEncoder[i].encoderPos = 0;
     }
 
     sei();
 
+    DBG("\r\nREADY\r\n");
 }
 
 void work()
 {
-
+    static uint32_t idleStart = 0;
+    bool idle = true;
+    for (uint8_t i = 0; i < 3; ++i)
+    {
+        if (!gMotor[i].inStandby)
+        {
+            idle = false;
+            break;
+        }
+    }
+#ifdef DBG_UART
+    if (!Uart::transmitBufferEmpty()) idle = false;
+#endif
+    set_sleep_mode(SLEEP_MODE_IDLE);
+    if (idle && !gTwBusy)
+    {
+        if (idleStart == 0)
+        {
+            idleStart = gIrqCounter;
+        }
+        else if (gIrqCounter - idleStart > 2) set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    }
+    else
+    {
+        idleStart = 0;
+    }
 }
 
 #endif

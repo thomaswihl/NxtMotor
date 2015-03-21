@@ -17,16 +17,24 @@ ISR(USART_RX_vect)
 {
     uint8_t data = UDR0;
     if (gLineReady) return;
-    if (data != '\r')
+    if (data == '\r')
+    {
+        gLineReady = true;
+    }
+    else if (data == 8 || data == 0x7f)
+    {
+        if (gRxLen > 0)
+        {
+            --gRxLen;
+            print("\x1b[D\x1b[K");
+        }
+    }
+    else
     {
         gRxBuffer[gRxLen++] = data;
         printChar(data);
         if (data == 27) gLineReady = true;
 
-    }
-    else
-    {
-        gLineReady = true;
     }
 }
 
@@ -40,6 +48,7 @@ ISR(USART_UDRE_vect)
     }
     uint8_t read = gTxReadOffset;
     UDR0 = gTxBuffer[read++];
+    UCSR0A |= _BV(TXC0);
     if (read >= TX_BUFFER_SIZE) read = 0;
     gTxReadOffset = read;
 }
@@ -105,6 +114,7 @@ void clearLine()
 
 bool transmitBufferEmpty()
 {
+    if ((UCSR0A & _BV(TXC0)) == 0) return false;
     return gTxReadOffset == gTxWriteOffset;
 }
 

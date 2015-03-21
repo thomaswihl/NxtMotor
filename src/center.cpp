@@ -43,11 +43,26 @@
 
 #define TW_BUFFER_SIZE 16    // I2C buffer size = 1 (address) + 1 (Command) + 4 (data)
 
+#define POWER_MASK          0x10
+#define BOARD_POWER_MASK    0x20
+
+
 volatile uint8_t gTwBuffer[TW_BUFFER_SIZE];
 volatile uint8_t gTwTxLen = 0;
 volatile uint8_t gTwRxLen = 0;
 volatile bool gTwReady = false;
-volatile uint8_t gRequestedMotorPos = -1;
+volatile uint16_t gRequestedMotorPos = 0;
+
+
+void exit()
+{
+    /* Wait for UART to send all data */
+    while (!Uart::transmitBufferEmpty()) { }
+    /* Poer off */
+    PORTD = 0;
+    /* Wait for power to go down */
+    while (true) { }
+}
 
 void printPrompt()
 {
@@ -145,6 +160,7 @@ ISR(TWI_vect)
             else
             {
                 TWCR |= _BV(TWINT) | _BV(TWSTO);    // all done, stop
+                //if (gTwBuffer[1] == (uint8_t)Command::SetPwm) gRequestedMotorPos = 200;
             }
         }
         else
@@ -189,18 +205,21 @@ ISR(ADC_vect)
     uint32_t value = ADCL | (ADCH << 8);
     value *= 12;
     ADCSRA &= ~(_BV(ADEN) | _BV(ADSC));
-//    Uart::printChar('\r');
-//    Uart::printValue(value / 1000);
-//    Uart::printChar('.');
-//    Uart::printValue(value % 1000);
-//    printPrompt();
-    /* Power off */
     if (value < 9000)
     {
+        /* Power off */
         sei();
         Uart::print("\r\nLOW BATT\r\n");
-        while (!Uart::transmitBufferEmpty()) { }
-        //PORTD = 0;
+        exit();
+    }
+    else if ((PORTD & BOARD_POWER_MASK) == 0)
+    {
+        /* Board power on */
+        Uart::printValue(value / 1000);
+        Uart::printChar('.');
+        Uart::printValue(value % 1000);
+        printPrompt();
+        PORTD |= BOARD_POWER_MASK;
     }
 }
 
@@ -214,37 +233,11 @@ ISR(TIMER2_COMPA_vect)
 //        gRequestedMotorPos = 0;
 //        receiveMotorData(gRequestedMotorPos, Command::GetPosition);
     }
-}
-
-void init()
-{
-    // POWER_ONOFF + BOARD_POWER
-    PORTD = 0x30;
-    DDRD = 0x30;
-
-    Uart::init();
-
-    // I2C: 400kHz
-    TWBR = 17; // (20MHz / 400kHz - 16) / 2 = TWBR * prescalar = 17 * 1
-    TWCR = _BV(TWEA) | _BV(TWEN) | _BV(TWIE);  // Enable I2C, acknowledge and interrupts
-    TWSR = 0; // prescaler = 1
-
-    /* TIMER2: Clear on compare match
-     * Mode 2: CTC, TOP = OCRA
-     * CLK I/O /8 prescaling
-     */
-    TCCR2A = _BV(WGM21);
-    TCCR2B = _BV(CS22) | _BV(CS21) | _BV(CS20);
-    TIMSK2 = _BV(OCIE2A);
-    OCR2A = 9;  // fclk / (2 * prescaler * freq) - 1 = 20MHz / (2 * 1024 * 1kHz) - 1 = 9
-
-    /* ADC */
-    ADMUX = _BV(REFS0) | 7;    // AVCC at AREF, channel 7
-    ADCSRA = _BV(ADEN) | _BV(ADIE) | 7;     // Enable, interrupt enable, prescaler = 128 -> 156250Hz
-
-    sei();
-    Uart::print("\r\nREADY.");
-    printPrompt();
+    if ((ms % 10) == 0 && gRequestedMotorPos > 0)
+    {
+        --gRequestedMotorPos;
+        receiveMotorData(5, Command::GetPosition);
+    }
 }
 
 
@@ -361,6 +354,37 @@ void cmdPin(const char* line, uint8_t len)
     }
 }
 
+
+void init()
+{
+    // POWER_ONOFF + BOARD_POWER
+    PORTD = POWER_MASK;
+    DDRD = POWER_MASK | BOARD_POWER_MASK;
+
+    Uart::init();
+
+    // I2C: 400kHz
+    TWBR = 17; // (20MHz / 400kHz - 16) / 2 = TWBR * prescalar = 17 * 1
+    TWCR = _BV(TWEA) | _BV(TWEN) | _BV(TWIE);  // Enable I2C, acknowledge and interrupts
+    TWSR = 0; // prescaler = 1
+
+    /* TIMER2: Clear on compare match
+     * Mode 2: CTC, TOP = OCRA
+     * CLK I/O /8 prescaling
+     */
+    TCCR2A = _BV(WGM21);
+    TCCR2B = _BV(CS22) | _BV(CS21) | _BV(CS20);
+    TIMSK2 = _BV(OCIE2A);
+    OCR2A = 18;  // fclk / (2 * prescaler * freq) - 1 = 20MHz / (2 * 1024 * 1kHz) - 1 = 9
+
+    /* ADC */
+    ADMUX = _BV(REFS0) | 7;    // AVCC at AREF, channel 7
+    ADCSRA = _BV(ADEN) | _BV(ADIE) | 7;     // Enable, interrupt enable, prescaler = 128 -> 156250Hz
+
+    sei();
+    Uart::print("\r\nVoltage ");
+}
+
 void work()
 {
     if (Uart::lineReady())
@@ -379,7 +403,8 @@ void work()
                 cmdPin(line, len);
                 break;
             case 27:
-                PORTD = 0;
+                Uart::print("\r\n Bye!\r\n");
+                exit();
                 break;
             }
         }
@@ -388,9 +413,10 @@ void work()
     }
     if (gTwReady)
     {
-//        if (gRequestedMotorPos >= 0)
-//        {
-//            Uart::printValue(*(volatile uint32_t*)gTwBuffer);
+        if (gRequestedMotorPos >= 0 && gTwRxLen == 4)
+        {
+            Uart::printValue(*(volatile uint32_t*)gTwBuffer);
+            Uart::print("\r\n");
 //            Uart::printChar(' ');
 //            ++gRequestedMotorPos;
 //            if (gRequestedMotorPos < 6)
@@ -402,8 +428,8 @@ void work()
 //                gRequestedMotorPos = -1;
 //                Uart::print("\r\n");
 //            }
-//        }
-//        else
+        }
+        else
         {
             Uart::print("\r\ni2c:");
             for (uint8_t i = 0; i < gTwRxLen; ++i)
